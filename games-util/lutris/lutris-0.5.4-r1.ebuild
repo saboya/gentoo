@@ -49,7 +49,6 @@ RDEPEND="
 	x11-libs/libnotify
 "
 
-PATCHES=( "${FILESDIR}/${P}-gtk.patch" )
 
 python_install_all() {
 	local DOCS=( AUTHORS README.rst docs/installers.rst )
@@ -58,6 +57,14 @@ python_install_all() {
 
 python_test() {
 	virtx nosetests -v
+}
+
+src_configure() {
+	default
+
+	if has_version '>=x11-libs/gtk+-3.24.13'; then
+		eapply "${FILESDIR}/${P}-gtk.patch"
+	fi
 }
 
 pkg_preinst() {
