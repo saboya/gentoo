@@ -1,0 +1,100 @@
+Subject: [PATCH] Experimental: end device grabs when hiding unmapped popups
+
+Upstream: https://gitlab.gnome.org/GNOME/gtk/-/merge_requests/10715
+Developed with AI assistance; upstream review is pending.
+
+GTK 4.20.4 investigation candidate, not yet verified against the
+original rapid-click reproduction. Includes a synthetic client-side
+grab cleanup regression test and an unrelated-grab preservation test.
+
+--- a/gdk/gdksurface.c
++++ b/gdk/gdksurface.c
+@@ -1692,7 +1692,10 @@
+ 
+   gdk_surface_queue_set_is_mapped (surface, FALSE);
+ 
+-  if (was_mapped)
++  /* A popup can acquire a device grab before its initial configure. If it is
++   * dismissed before mapping, the grab still needs to be ended.
++   */
++  if (was_mapped || GDK_IS_POPUP (surface))
+     {
+       GdkDisplay *display;
+       GdkSeat *seat;
+--- a/testsuite/gdk/meson.build
++++ b/testsuite/gdk/meson.build
+@@ -74,6 +74,7 @@
+ endforeach
+ 
+ internal_tests = [
++  { 'name': 'unmapped-popup-grab' },
+   { 'name': 'colorstate-internal' },
+   { 'name': 'dihedral' },
+   { 'name': 'image' },
+--- /dev/null
++++ b/testsuite/gdk/unmapped-popup-grab.c
+@@ -0,0 +1,64 @@
++/* SPDX-License-Identifier: LGPL-2.1-or-later */
++
++#include <gtk/gtk.h>
++#include "gdk/gdkdisplayprivate.h"
++#include "gdk/gdksurfaceprivate.h"
++
++static void
++test_hide_unmapped_popup_grab (gconstpointer user_data)
++{
++  GdkDisplay *display = gdk_display_get_default ();
++  GdkSeat *seat = gdk_display_get_default_seat (display);
++  GdkDevice *pointer = seat ? gdk_seat_get_pointer (seat) : NULL;
++  GdkSurface *parent;
++  GdkSurface *popup;
++  gulong serial;
++  gboolean grab_survived;
++  gboolean unrelated = GPOINTER_TO_INT (user_data);
++
++  if (pointer == NULL)
++    {
++      g_test_skip ("Display has no pointer");
++      return;
++    }
++
++  parent = gdk_surface_new_toplevel (display);
++  popup = gdk_surface_new_popup (parent, TRUE);
++  g_assert_false (gdk_surface_get_mapped (popup));
++
++  /* Isolate the client-side bookkeeping left by a popup dismissed before
++   * its initial configure. No compositor-level input grab is requested.
++   */
++  serial = _gdk_display_get_next_serial (display);
++  _gdk_display_add_device_grab (display, pointer, unrelated ? parent : popup, TRUE,
++                               GDK_ALL_EVENTS_MASK, serial,
++                               GDK_CURRENT_TIME, FALSE);
++  g_assert_nonnull (_gdk_display_has_device_grab (display, pointer, serial));
++
++  gdk_surface_hide (popup);
++  gdk_surface_hide (popup);
++  serial = _gdk_display_get_next_serial (display);
++  grab_survived = _gdk_display_has_device_grab (display, pointer, serial) != NULL;
++
++  /* Clean up even on the deliberately failing baseline. */
++  _gdk_display_end_device_grab (display, pointer, serial, unrelated ? parent : popup, TRUE);
++  gdk_surface_destroy (popup);
++  gdk_surface_destroy (parent);
++
++  if (unrelated)
++    g_assert_true (grab_survived);
++  else
++    g_assert_false (grab_survived);
++}
++
++int
++main (int argc, char **argv)
++{
++  g_test_init (&argc, &argv, NULL);
++  gtk_init ();
++  g_test_add_data_func ("/popup/hide-unmapped-ends-grab", GINT_TO_POINTER (FALSE),
++                        test_hide_unmapped_popup_grab);
++  g_test_add_data_func ("/popup/hide-unmapped-preserves-other-grab", GINT_TO_POINTER (TRUE),
++                        test_hide_unmapped_popup_grab);
++  return g_test_run ();
++}
